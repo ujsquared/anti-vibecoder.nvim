@@ -1,6 +1,13 @@
-# Anti-VibeCoder.nvim
+# anti-vibecoder.nvim
 
 A Neovim plugin that provides LLM-based code guidance, helping junior developers learn and improve their code through senior engineer-like mentorship.
+
+## !!! 🚨🚨🚨Irony Alert 🚨🚨🚨!!!
+I have vibe coded this. 🤣🤣🤣🤣🤣
+
+# Credits
+Credits to Tusharsingh Baghel [@tusharamasingh](https://x.com/tusharamasingh) for his [post](https://x.com/tusharamasingh/status/1913992056680374404) that inspired me to create something similar for neovim.
+
 
 ## Features
 
@@ -21,11 +28,11 @@ A Neovim plugin that provides LLM-based code guidance, helping junior developers
 Using [Lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
-{
-    "ujsquared/anti-vibecoder.nvim",
+
+"ujsquared/anti-vibecoder.nvim",
     opts = {
         api_key = "your-gemini-api-key-here",
-        model = "gemini-pro",
+        model = "gemini-2.0-flash",
         max_tokens = 1000,
         temperature = 0.7,
     },
