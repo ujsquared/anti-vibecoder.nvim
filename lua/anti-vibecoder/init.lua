@@ -8,6 +8,12 @@ local config = {
     temperature = 0.7,
 }
 
+-- Store conversation state
+local conversation_state = {
+    content = nil,  -- Original file content
+    history = {},   -- Conversation history
+}
+
 -- Setup function
 function M.setup(opts)
     config = vim.tbl_deep_extend("force", config, opts or {})
@@ -345,6 +351,10 @@ end
 local function start_interaction_with_content(content)
     local buf, win = create_interaction_window()
     
+    -- Store the content in conversation state
+    conversation_state.content = content
+    conversation_state.history = {}
+    
     -- Set up the initial prompt
     local initial_prompt = "Act like a senior engineer guiding a junior dev in the correct direction instead of directly solving it. Here's the code:\n\n" .. content
     local initial_lines = split_lines(initial_prompt)
@@ -352,6 +362,7 @@ local function start_interaction_with_content(content)
     -- Clear the buffer and set initial content
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
         "Press c to send prompt to LLM",
+        "Press A to add more files",
         "Press q to close this window",
         "",
         "---",
@@ -370,7 +381,32 @@ local function start_interaction_with_content(content)
         vim.keymap.set("n", "c", function()
             local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
             local prompt = table.concat(lines, "\n")
-            local response_lines = send_to_llm(content, prompt)
+            
+            -- Add to conversation history
+            table.insert(conversation_state.history, {
+                role = "user",
+                content = prompt
+            })
+            
+            local response_lines = send_to_llm(conversation_state.content, prompt)
+            
+            -- Add response to conversation history
+            table.insert(conversation_state.history, {
+                role = "assistant",
+                content = table.concat(response_lines, "\n")
+            })
+            
+            -- If this is the first response, clean up the buffer
+            if #conversation_state.history == 2 then
+                vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+                    "Press c to send prompt to LLM",
+                    "Press a to add more files",
+                    "Press q to close this window",
+                    "",
+                    "---",
+                    ""
+                })
+            end
             
             -- Append response
             vim.api.nvim_buf_set_lines(buf, -1, -1, false, {""})
@@ -379,6 +415,116 @@ local function start_interaction_with_content(content)
             
             -- Scroll to bottom
             vim.api.nvim_command("normal! G")
+        end, opts)
+
+        -- Add more files
+        vim.keymap.set("n", "A", function()
+            -- Store current window and buffer
+            local current_win = win
+            local current_buf = buf
+            
+            -- Get git files
+            local files = get_git_files()
+            if #files == 0 then
+                vim.notify("No files found in git repository", vim.log.levels.ERROR)
+                return
+            end
+
+            -- Create file selection window
+            local select_buf, select_win, tree = create_file_selection_window(files)
+            local start_line = 9  -- Line where tree starts
+
+            -- Set up key mappings for file selection
+            local function setup_selection_keymaps()
+                local opts = { buffer = select_buf, silent = true }
+                
+                local function handle_node_action(action)
+                    local line = vim.api.nvim_win_get_cursor(select_win)[1]
+                    if line >= start_line then
+                        local node, _ = find_node_at_line(tree, line, 0, start_line - 1)
+                        if node then
+                            if action == "toggle" then
+                                node.selected = not node.selected
+                            elseif action == "expand" and node.type == "dir" then
+                                node.expanded = not node.expanded
+                            end
+                            update_tree_display(select_buf, tree)
+                            -- Restore cursor position
+                            vim.api.nvim_win_set_cursor(select_win, {line, 0})
+                        end
+                    end
+                end
+
+                -- z to toggle selection
+                vim.keymap.set("n", "z", function()
+                    handle_node_action("toggle")
+                end, opts)
+
+                -- x to expand/collapse directory
+                vim.keymap.set("n", "x", function()
+                    handle_node_action("expand")
+                end, opts)
+
+                -- c to show confirmation window
+                vim.keymap.set("n", "c", function()
+                    local selected_files = get_selected_files_from_tree(tree)
+                    if #selected_files == 0 then
+                        vim.notify("Please select at least one file", vim.log.levels.WARN)
+                        return
+                    end
+                    
+                    -- Show confirmation message
+                    local confirm_buf = vim.api.nvim_create_buf(false, true)
+                    local confirm_win = vim.api.nvim_open_win(confirm_buf, true, {
+                        relative = "editor",
+                        width = 50,
+                        height = 3,
+                        row = math.floor((vim.o.lines - 3) / 2),
+                        col = math.floor((vim.o.columns - 50) / 2),
+                        style = "minimal",
+                        border = "rounded",
+                    })
+
+                    vim.api.nvim_buf_set_lines(confirm_buf, 0, -1, false, {
+                        "Selected " .. #selected_files .. " files. Press:",
+                        "y - Add to conversation",
+                        "n - Cancel"
+                    })
+
+                    -- Set up confirmation keymaps
+                    local confirm_opts = { buffer = confirm_buf, silent = true }
+                    vim.keymap.set("n", "y", function()
+                        vim.api.nvim_win_close(confirm_win, true)
+                        vim.api.nvim_win_close(select_win, true)
+                        
+                        -- Get content of selected files
+                        local new_content = get_selected_files_content(selected_files)
+                        
+                        -- Append to existing content
+                        conversation_state.content = conversation_state.content .. "\n\n=== Additional Files ===\n\n" .. new_content
+                        
+                        -- Add a message about the new files
+                        local file_names = table.concat(selected_files, ", ")
+                        local message = "Added " .. #selected_files .. " new file(s) to the conversation:\n" .. file_names
+                        vim.api.nvim_buf_set_lines(current_buf, -1, -1, false, {""})
+                        vim.api.nvim_buf_set_lines(current_buf, -1, -1, false, split_lines(message))
+                        vim.api.nvim_buf_set_lines(current_buf, -1, -1, false, {"", "---", ""})
+                        
+                        -- Focus back on conversation window
+                        vim.api.nvim_set_current_win(current_win)
+                    end, confirm_opts)
+
+                    vim.keymap.set("n", "n", function()
+                        vim.api.nvim_win_close(confirm_win, true)
+                    end, confirm_opts)
+                end, opts)
+
+                vim.keymap.set("n", "<Esc>", function()
+                    vim.api.nvim_win_close(select_win, true)
+                end, opts)
+            end
+
+            setup_selection_keymaps()
         end, opts)
 
         -- Close window
@@ -395,6 +541,69 @@ end
 
 -- Main function to start the interaction
 function M.start_interaction()
+    -- If we have an existing conversation, restore it
+    if conversation_state.content and #conversation_state.history > 0 then
+        local buf, win = create_interaction_window()
+        
+        -- Set up the buffer with conversation history
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+            "Press c to send prompt to LLM",
+            "Press q to close this window",
+            "",
+            "---",
+            ""
+        })
+        
+        -- Add conversation history to buffer
+        for _, message in ipairs(conversation_state.history) do
+            vim.api.nvim_buf_set_lines(buf, -1, -1, false, split_lines(message.content))
+            vim.api.nvim_buf_set_lines(buf, -1, -1, false, {"", "---", ""})
+        end
+        
+        -- Set up key mappings
+        local function setup_keymaps()
+            local opts = { buffer = buf, silent = true }
+            
+            -- Send prompt to LLM
+            vim.keymap.set("n", "c", function()
+                local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+                local prompt = table.concat(lines, "\n")
+                
+                -- Add to conversation history
+                table.insert(conversation_state.history, {
+                    role = "user",
+                    content = prompt
+                })
+                
+                local response_lines = send_to_llm(conversation_state.content, prompt)
+                
+                -- Add response to conversation history
+                table.insert(conversation_state.history, {
+                    role = "assistant",
+                    content = table.concat(response_lines, "\n")
+                })
+                
+                -- Append response
+                vim.api.nvim_buf_set_lines(buf, -1, -1, false, {""})
+                vim.api.nvim_buf_set_lines(buf, -1, -1, false, response_lines)
+                vim.api.nvim_buf_set_lines(buf, -1, -1, false, {"", "---", ""})
+                
+                -- Scroll to bottom
+                vim.api.nvim_command("normal! G")
+            end, opts)
+
+            -- Close window
+            vim.keymap.set("n", "q", function()
+                vim.api.nvim_win_close(win, true)
+            end, opts)
+        end
+
+        setup_keymaps()
+        vim.api.nvim_set_current_win(win)
+        return
+    end
+
+    -- If no existing conversation, start a new one
     local files = get_git_files()
     if #files == 0 then
         vim.notify("No files found in git repository", vim.log.levels.ERROR)
@@ -403,7 +612,7 @@ function M.start_interaction()
 
     -- Create file selection window
     local select_buf, select_win, tree = create_file_selection_window(files)
-    local start_line = 8  -- Line where tree starts
+    local start_line = 9  -- Line where tree starts
 
     -- Set up key mappings for file selection
     local function setup_selection_keymaps()
